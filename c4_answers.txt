@@ -1,0 +1,53 @@
+-----1. What is the purpose of the next() function, and how does it contribute to the compilation process?-----
+
+The next() function is basically the lexical analyzer in C4. It reads the source code one character at a time
+and figures out what each piece means. When you call next(), it moves the p pointer forward in the code until
+it finds something important like a variable name, number, or operator. 
+
+It does a bunch of important stuff for compilation. It identifies different tokens like keywords and numbers,
+manages the symbol table by adding new identifiers it finds, skips over comments, and keeps track of which line
+were on for error messages. It also calculates hashes for identifiers which makes looking them up faster later.
+Without next(), the parser would be blind and couldn't understand the code structure at all.
+
+-----2. How does C4 handle symbol resolution (e.g., variables, functions)?-----
+
+C4 handles symbols in a pretty simple way. It uses a flat array called sym to store all the identifiers.
+When next() finds a name in the code, it calculates a hash based on the characters and then searches the
+symbol table to see if that name exists already.
+
+The compiler keeps track of different scopes using the Class field which tells if something is global, local,
+or a function. When local variables have the same name as globals, C4 saves the original info in fields that start
+with H (like HClass and HVal). Functions get stored with Class=Fun and Val pointing to where their code is.
+Each symbol also stores what type it is.
+
+When the compiler sees an identifier while parsing, it looks it up to figure out where its stored and what type
+it is so it can generate the right code.
+
+-----3. What are the limitations of C4 as a compiler? What features of C does it not support?-----
+
+C4 is super limited compared to real C. It only supports char, int, and pointers - no floats, structs or unions.
+For control flow, it only has if and while statements, no for loops or switch statements. The standard library is
+tiny with just basic I/O and memory functions.
+
+It doesn't have a preprocessor, so no #include or #define. Theres no const or volatile qualifiers, no typedefs,
+no bitfields, and no function prototypes. You can't make variadic functions properly, and theres no static variables.
+You also can't initialize arrays with syntax like int a[] = {1,2,3}. The error checking is pretty bad and it doesn't do any optimizations.
+
+These limitations make it useless for real work, but they also make it simple enough to fit in a few hundred lines
+while still being able to compile itself, which is pretty cool.
+
+-----4. How does C4 achieve self-hosting (i.e., compiling itself)? What are the implications of this design?-----
+
+C4 achieves self-hosting by implementing just enough C features to express it's own algorithms. It uses a simple
+compilation approach and generates code for a virtual machine that it also implements. The compiler was carefully
+designed to only use language features that it can handle itself.
+
+This design has several implications. It proves that the language subset is powerful enough to be useful. It shows the
+minimal features needed for a real programming language. It could potentially be used to bootstrap more complex compilers.
+The VM approach makes it easier to port to different platforms.
+
+The self-hosting design forces C4 to be simple with minimal dependencies, but it also means the compiler can't evolve to use
+C features it doesn't support. Debugging is harder because bugs in the compiler affect its ability to compile itself.
+
+Self-hosting is a big milestone for any compiler. It creates a cycle where improvements to the compiler can be applied to itself.
+C4 doing this with such a tiny implementation is really impressive and shows that even a minimal language can be powerful enough for real tasks. 
