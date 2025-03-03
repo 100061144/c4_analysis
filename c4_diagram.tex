@@ -1,0 +1,48 @@
+\documentclass{article}
+\usepackage{graphicx}
+\usepackage[margin=1in]{geometry}
+\usepackage{title}
+
+\title{C4 Compiler Architecture}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Compiler Overview}
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=\textwidth]{html/c4_8c__incl}
+    \caption{Overall Compiler Architecture}
+\end{figure}
+
+\section{Main Function Flow}
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=\textwidth]{html/c4_8c_a3c04138a5bfe5d72780bb7e82a18e627_cgraph}
+    \caption{Main Function Call Graph}
+\end{figure}
+
+\section{Lexical Analysis}
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=\textwidth]{html/c4_8c_a1bbf17561fdc517f5c69b8887f29ffc8_cgraph}
+    \caption{Next Function (Lexer) Call Graph}
+\end{figure}
+
+\section{Parsing}
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=\textwidth]{html/c4_8c_a030d86c976b02e5e18fa50e4027fb2e7_cgraph}
+    \caption{Expression Parser Call Graph}
+\end{figure}
+
+\section{Statement Processing}
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=\textwidth]{html/c4_8c_a041249f802c5bf4c2deae666610e03c4_cgraph}
+    \caption{Statement Parser Call Graph}
+\end{figure}
+
+\end{document} 
