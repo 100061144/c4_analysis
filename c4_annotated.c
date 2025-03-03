@@ -1,206 +1,278 @@
-// c4.c - C in four functions
+// c4.c - A minimal self-hosting C compiler written in 4 functions
+// Author: Robert Swierczek
+// This compiler is special because it can compile itself! It's like a program that can make copies of itself.
+// It includes just enough C features to be useful for basic system programming.
 
-// char, int, and pointer types
-// if, while, return, and expression statements
-// just enough features to allow self-compilation and a bit more
-
-// Written by Robert Swierczek
-
+// These are like importing tools we need:
+// stdio.h - for reading/writing (like printf)
+// stdlib.h - for memory stuff (like malloc)
+// memory.h - for memory operations (like memcmp)
+// unistd.h - for system stuff (like read/write)
+// fcntl.h - for file control
 #include <stdio.h>
 #include <stdlib.h>
 #include <memory.h>
 #include <unistd.h>
 #include <fcntl.h>
+
+// This makes all integers 64-bit (really big numbers)
+// It's like telling the computer "when I say int, I mean a big number"
 #define int long long
 
-char *p, *lp, // current position in source code
-     *data;   // data/bss pointer
+// These are like bookmarks that help us keep track of where we are in the code
+char *p,    // Points to where we're currently reading in the source code (like a finger following text)
+     *lp,   // Remembers the start of the current line (helpful for error messages)
+     *data; // Points to where we store global variables and constants
 
-int *e, *le,  // current position in emitted code
-    *id,      // currently parsed identifier
-    *sym,     // symbol table (simple list of identifiers)
-    tk,       // current token
-    ival,     // current token value
-    ty,       // current expression type
-    loc,      // local variable offset
-    line,     // current line number
-    src,      // print source and assembly flag
-    debug;    // print executed instructions
+// More bookmarks and counters for different parts of the compiler
+int *e,     // Points to where we're writing the compiled code
+    *le,    // Points to the last instruction we wrote
+    *id,    // Points to the name we're currently looking at
+    *sym,   // A big list of all names and variables we know about
+    tk,     // The current piece of code we're looking at (like +, -, or a name)
+    ival,   // If we find a number, we store it here
+    ty,     // What type of thing we're dealing with (like int or char)
+    loc,    // Helps us keep track of local variables
+    line,   // Which line of code we're reading (for error messages)
+    src,    // If true, shows the source code while compiling
+    debug;  // If true, shows extra information for debugging
 
-// tokens and classes (operators last and in precedence order)
+// This is like a dictionary of all the special words and symbols the compiler knows
+// We start at 128 to avoid mixing up with regular characters (like 'a' which is 97)
 enum {
-  Num = 128, Fun, Sys, Glo, Loc, Id,
-  Char, Else, Enum, If, Int, Return, Sizeof, While,
-  Assign, Cond, Lor, Lan, Or, Xor, And, Eq, Ne, Lt, Gt, Le, Ge, Shl, Shr, Add, Sub, Mul, Div, Mod, Inc, Dec, Brak
+    // These are for numbers and names
+    Num = 128, Fun, Sys, Glo, Loc, Id,
+    
+    // These are the special words in C (keywords)
+    Char, Else, Enum, If, Int, Return, Sizeof, While,
+    
+    // These are all the math and comparison symbols
+    // They're in order of priority (like how * happens before +)
+    Assign, Cond, Lor, Lan, Or, Xor, And, Eq, Ne, Lt, Gt, Le, Ge,
+    Shl, Shr, Add, Sub, Mul, Div, Mod, Inc, Dec, Brak
 };
 
-// opcodes
-enum { LEA ,IMM ,JMP ,JSR ,BZ  ,BNZ ,ENT ,ADJ ,LEV ,LI  ,LC  ,SI  ,SC  ,PSH ,
-       OR  ,XOR ,AND ,EQ  ,NE  ,LT  ,GT  ,LE  ,GE  ,SHL ,SHR ,ADD ,SUB ,MUL ,DIV ,MOD ,
-       OPEN,READ,CLOS,PRTF,MALC,FREE,MSET,MCMP,EXIT };
+// These are the instructions our simple computer understands
+// Think of them like basic commands in a very simple calculator
+enum {
+    // Commands for moving data around
+    LEA,IMM,JMP,JSR,BZ,BNZ,ENT,ADJ,LEV,LI,LC,SI,SC,PSH,
+    
+    // Math and logic commands
+    OR,XOR,AND,EQ,NE,LT,GT,LE,GE,SHL,SHR,ADD,SUB,MUL,DIV,MOD,
+    
+    // Commands to talk to the computer system
+    OPEN,READ,CLOS,PRTF,MALC,FREE,MSET,MCMP,EXIT
+};
 
-// types
+// The types of data our compiler can handle
+// Like different sized boxes for storing different kinds of things
 enum { CHAR, INT, PTR };
 
-// identifier offsets (since we can't create an ident struct)
-enum { Tk, Hash, Name, Class, Type, Val, HClass, HType, HVal, Idsz };
+// This is how we store information about each name/variable in our program
+// Since we can't use structs (they're too complex), we use a simple list
+// Each entry in the list has these parts in order:
+enum {
+    Tk,      // What kind of thing it is (like variable or function)
+    Hash,    // A number that helps us find it quickly
+    Name,    // The actual name (like "x" or "main")
+    Class,   // Whether it's a global or local variable or function
+    Type,    // What type it is (like int or char)
+    Val,     // Its value or where it's stored
+    HClass,  // Previous class (for when variables share names)
+    HType,   // Previous type
+    HVal,    // Previous value
+    Idsz     // How big each entry is
+};
 
-// reads the next token from source code
-// handles numbers, strings, identifiers, operators, etc
-// updates tk (token) and other globals based on what it reads
-void next()
-{
-  char *pp; // temporary pointer to remember start of words
+// The four main functions:
+// next() - reads the next piece of code
+// expr() - understands expressions (like 2+2)
+// stmt() - understands statements (like if/while)
+// main() - puts it all together
 
-  while (tk = *p) {
-    ++p;
-    if (tk == '\n') {
-      if (src) {
-        // prints current line and its compiled code
-        printf("%d: %.*s", line, p - lp, lp);
-        lp = p;
-        while (le < e) {
-          // prints each instruction name (they're stored as 5-letter codes)
-          printf("%8.4s", &"LEA ,IMM ,JMP ,JSR ,BZ  ,BNZ ,ENT ,ADJ ,LEV ,LI  ,LC  ,SI  ,SC  ,PSH ,"
-                           "OR  ,XOR ,AND ,EQ  ,NE  ,LT  ,GT  ,LE  ,GE  ,SHL ,SHR ,ADD ,SUB ,MUL ,DIV ,MOD ,"
-                           "OPEN,READ,CLOS,PRTF,MALC,FREE,MSET,MCMP,EXIT,"[*++le * 5]);
-          // some instructions need extra numbers printed
-          if (*le <= ADJ) printf(" %d\n", *++le); else printf("\n");
+// This compiler is special because it only uses these four functions to do
+// everything! Most compilers have many more functions, but this one shows
+// we can make a working compiler with just the basics. 
+
+// next() is like a scanner - it reads one piece of code at a time
+// It's similar to how we read text one word at a time
+void next() {
+    char *pp; // Temporary pointer for remembering where a word starts
+
+    // Keep reading characters until we find something meaningful
+    while (tk = *p) {
+        ++p; // Move to next character
+        
+        // Handle new lines - important for keeping track of line numbers
+        if (tk == '\n') {
+            if (src) { // If we're showing source code while compiling
+                // Print the current line and any generated code
+                printf("%d: %.*s", line, p - lp, lp);
+                lp = p;
+                // Print all instructions generated for this line
+                while (le < e) {
+                    // Print instruction names (each is 5 characters with padding)
+                    printf("%8.4s", &"LEA ,IMM ,JMP ,JSR ,BZ  ,BNZ ,ENT ,ADJ ,LEV ,LI  ,LC  ,SI  ,SC  ,PSH ,"
+                                   "OR  ,XOR ,AND ,EQ  ,NE  ,LT  ,GT  ,LE  ,GE  ,SHL ,SHR ,ADD ,SUB ,MUL ,DIV ,MOD ,"
+                                   "OPEN,READ,CLOS,PRTF,MALC,FREE,MSET,MCMP,EXIT,"[*++le * 5]);
+                    // Print argument for instructions that need one
+                    if (*le <= ADJ) printf(" %d\n", *++le); else printf("\n");
+                }
+            }
+            ++line; // Count the line
         }
-      }
-      ++line;
-    }
-    else if (tk == '#') {
-      // skips over lines starting with # (preprocessor stuff)
-      while (*p != 0 && *p != '\n') ++p;
-    }
-    else if ((tk >= 'a' && tk <= 'z') || (tk >= 'A' && tk <= 'Z') || tk == '_') {
-      // found a word (like a variable name)
-      pp = p - 1;
-      // read the whole word
-      while ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9') || *p == '_')
-        tk = tk * 147 + *p++; // makes a number that helps identify this word
-      tk = (tk << 6) + (p - pp);
-      // look for this word in our list
-      id = sym;
-      while (id[Tk]) {
-        if (tk == id[Hash] && !memcmp((char *)id[Name], pp, p - pp)) { tk = id[Tk]; return; }
-        id = id + Idsz;
-      }
-      // if word is new, add it to our list
-      id[Name] = (int)pp;
-      id[Hash] = tk;
-      tk = id[Tk] = Id;
-      return;
-    }
-    else if (tk >= '0' && tk <= '9') {
-      // handles regular/decimal numbers (like 123)
-      if (ival = tk - '0') { while (*p >= '0' && *p <= '9') ival = ival * 10 + *p++ - '0'; }
-      // handles hex numbers (like 0xFF)
-      else if (*p == 'x' || *p == 'X') {
-        while ((tk = *++p) && ((tk >= '0' && tk <= '9') || (tk >= 'a' && tk <= 'f') || (tk >= 'A' && tk <= 'F')))
-          ival = ival * 16 + (tk & 15) + (tk >= 'A' ? 9 : 0);
-      }
-      // handles octal numbers (like 077)
-      else { while (*p >= '0' && *p <= '7') ival = ival * 8 + *p++ - '0'; }
-      tk = Num;
-      return;
-    }
-    else if (tk == '/') {
-      // handles comments (like // this is a comment)
-      if (*p == '/') {
-        ++p;
-        while (*p != 0 && *p != '\n') ++p;
-      }
-      // if not a comment, it's division
-      else {
-        tk = Div;
-        return;
-      }
-    }
-    else if (tk == '\'' || tk == '"') {
-      // handles text in quotes (like "hello" or 'x')
-      pp = data;
-      while (*p != 0 && *p != tk) {
-        if ((ival = *p++) == '\\') {
-          // handles special characters like \n
-          if ((ival = *p++) == 'n') ival = '\n';
+        
+        // Handle preprocessor directives (lines starting with #)
+        else if (tk == '#') {
+            while (*p != 0 && *p != '\n') ++p; // Skip the whole line
         }
-        if (tk == '"') *data++ = ival;
-      }
-      ++p;
-      if (tk == '"') ival = (int)pp; else tk = Num;
-      return;
+        
+        // Handle names (variables, functions, etc.)
+        // Names can contain letters, numbers, and underscore
+        else if ((tk >= 'a' && tk <= 'z') || (tk >= 'A' && tk <= 'Z') || tk == '_') {
+            pp = p - 1; // Remember where the name starts
+            // Read the whole name
+            while ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') || 
+                   (*p >= '0' && *p <= '9') || *p == '_')
+                tk = tk * 147 + *p++; // Calculate hash while reading
+            
+            // Create unique hash for this name
+            tk = (tk << 6) + (p - pp);
+            
+            // Look for this name in our symbol table
+            id = sym;
+            while (id[Tk]) {
+                // If we find it, return its token type
+                if (tk == id[Hash] && !memcmp((char *)id[Name], pp, p - pp)) {
+                    tk = id[Tk];
+                    return;
+                }
+                id = id + Idsz;
+            }
+            
+            // If name not found, add it as a new identifier
+            id[Name] = (int)pp;
+            id[Hash] = tk;
+            tk = id[Tk] = Id;
+            return;
+        }
+        
+        // Handle numbers (decimal, hex, octal)
+        else if (tk >= '0' && tk <= '9') {
+            // Decimal numbers
+            if (ival = tk - '0') {
+                while (*p >= '0' && *p <= '9') ival = ival * 10 + *p++ - '0';
+            }
+            // Hex numbers (starting with 0x)
+            else if (*p == 'x' || *p == 'X') {
+                while ((tk = *++p) && ((tk >= '0' && tk <= '9') || 
+                       (tk >= 'a' && tk <= 'f') || (tk >= 'A' && tk <= 'F')))
+                    ival = ival * 16 + (tk & 15) + (tk >= 'A' ? 9 : 0);
+            }
+            // Octal numbers (starting with 0)
+            else {
+                while (*p >= '0' && *p <= '7') ival = ival * 8 + *p++ - '0';
+            }
+            tk = Num;
+            return;
+        }
+        
+        // Handle division operator and comments
+        else if (tk == '/') {
+            if (*p == '/') { // Single line comment
+                ++p;
+                while (*p != 0 && *p != '\n') ++p;
+            }
+            else { // Division operator
+                tk = Div;
+                return;
+            }
+        }
+        
+        // Handle strings and character literals
+        else if (tk == '\'' || tk == '"') {
+            pp = data; // Remember where string starts in data segment
+            while (*p != 0 && *p != tk) {
+                if ((ival = *p++) == '\\') { // Handle escape sequences
+                    if ((ival = *p++) == 'n') ival = '\n';
+                }
+                if (tk == '"') *data++ = ival;
+            }
+            ++p;
+            if (tk == '"') ival = (int)pp; else tk = Num;
+            return;
+        }
+        
+        // Handle two-character operators
+        else if (tk == '=') { if (*p == '=') { ++p; tk = Eq; } else tk = Assign; return; }
+        else if (tk == '+') { if (*p == '+') { ++p; tk = Inc; } else tk = Add; return; }
+        else if (tk == '-') { if (*p == '-') { ++p; tk = Dec; } else tk = Sub; return; }
+        else if (tk == '!') { if (*p == '=') { ++p; tk = Ne; } return; }
+        else if (tk == '<') { if (*p == '=') { ++p; tk = Le; } 
+                             else if (*p == '<') { ++p; tk = Shl; } else tk = Lt; return; }
+        else if (tk == '>') { if (*p == '=') { ++p; tk = Ge; }
+                             else if (*p == '>') { ++p; tk = Shr; } else tk = Gt; return; }
+        else if (tk == '|') { if (*p == '|') { ++p; tk = Lor; } else tk = Or; return; }
+        else if (tk == '&') { if (*p == '&') { ++p; tk = Lan; } else tk = And; return; }
+        
+        // Single-character operators
+        else if (tk == '^') { tk = Xor; return; }
+        else if (tk == '%') { tk = Mod; return; }
+        else if (tk == '*') { tk = Mul; return; }
+        else if (tk == '[') { tk = Brak; return; }
+        else if (tk == '?') { tk = Cond; return; }
+        // Other single characters that don't need special handling
+        else if (tk == '~' || tk == ';' || tk == '{' || tk == '}' || tk == '(' || 
+                 tk == ')' || tk == ']' || tk == ',' || tk == ':') return;
     }
-    // handles symbols/operators (like brackets, additions, etc...)
-    else if (tk == '=') { if (*p == '=') { ++p; tk = Eq; } else tk = Assign; return; }    // = or ==
-    else if (tk == '+') { if (*p == '+') { ++p; tk = Inc; } else tk = Add; return; }      // + or ++
-    else if (tk == '-') { if (*p == '-') { ++p; tk = Dec; } else tk = Sub; return; }      // - or --
-    else if (tk == '!') { if (*p == '=') { ++p; tk = Ne; } return; }                      // ! or !=
-    else if (tk == '<') { if (*p == '=') { ++p; tk = Le; }                                // < or <= or <<
-                         else if (*p == '<') { ++p; tk = Shl; } else tk = Lt; return; }
-    else if (tk == '>') { if (*p == '=') { ++p; tk = Ge; }                                // > or >= or >>
-                         else if (*p == '>') { ++p; tk == Shr; } else tk = Gt; return; }
-    else if (tk == '|') { if (*p == '|') { ++p; tk = Lor; } else tk = Or; return; }      // | or ||
-    else if (tk == '&') { if (*p == '&') { ++p; tk = Lan; } else tk = And; return; }     // & or &&
-    else if (tk == '^') { tk = Xor; return; }   // ^
-    else if (tk == '%') { tk = Mod; return; }   // %
-    else if (tk == '*') { tk = Mul; return; }   // *
-    else if (tk == '[') { tk = Brak; return; }  // [
-    else if (tk == '?') { tk = Cond; return; }  // ?
-    else if (tk == '~' || tk == ';' || tk == '{' || tk == '}' || tk == '(' || tk == ')' || 
-             tk == ']' || tk == ',' || tk == ':') return;
-  }
 }
 
-// parses and compiles expressions (like 2+2 or x*y)
-// lev is the precedence level - it tells us which operators to handle
-// higher lev means only handle operators with higher precedence
-void expr(int lev)
-{
-  int t, *d;
+// expr() understands expressions - it's like a calculator that can handle
+// complex math and logic. It uses precedence to know which operations to do first
+void expr(int lev) {
+    int t, *d;
 
-  if (!tk) { printf("%d: unexpected eof in expression\n", line); exit(-1); }
-  else if (tk == Num) { *++e = IMM; *++e = ival; next(); ty = INT; }  // handles plain numbers
-  else if (tk == '"') {  // handles string literals
-    *++e = IMM; *++e = ival; next();
-    while (tk == '"') next();  // handles multiple strings next to each other
-    data = (char *)((int)data + sizeof(int) & -sizeof(int)); ty = PTR;
-  }
-  else if (tk == Sizeof) {  // handles sizeof operator
-    next();
-    if (tk == '(') next(); else { printf("%d: open paren expected in sizeof\n", line); exit(-1); }
-    ty = INT;
-    if (tk == Int) next(); 
-    else if (tk == Char) { next(); ty = CHAR; }
-    while (tk == Mul) { next(); ty = ty + PTR; }  // handles pointer types
-    if (tk == ')') next(); else { printf("%d: close paren expected in sizeof\n", line); exit(-1); }
-    *++e = IMM; *++e = (ty == CHAR) ? sizeof(char) : sizeof(int);
-    ty = INT;
-  }
-  else if (tk == Id) {  // handles variables and function calls
-    d = id; next();
-    if (tk == '(') {  // function call
-      next();
-      t = 0;  // counts number of arguments
-      while (tk != ')') { expr(Assign); *++e = PSH; ++t; if (tk == ',') next(); }
-      next();
-      // handle different types of functions (system, user-defined)
-      if (d[Class] == Sys) *++e = d[Val];
-      else if (d[Class] == Fun) { *++e = JSR; *++e = d[Val]; }
-      else { printf("%d: bad function call\n", line); exit(-1); }
-      if (t) { *++e = ADJ; *++e = t; }  // cleanup after call
-      ty = d[Type];
+    // Handle numbers, variables, and function calls
+    if (!tk) { printf("%d: unexpected eof in expression\n", line); exit(-1); }
+    else if (tk == Num) { // Number
+        *++e = IMM; *++e = ival;
+        next();
     }
-    else if (d[Class] == Num) { *++e = IMM; *++e = d[Val]; ty = INT; }  // enum value
-    else {  // variable access
-      if (d[Class] == Loc) { *++e = LEA; *++e = loc - d[Val]; }  // local var
-      else if (d[Class] == Glo) { *++e = IMM; *++e = d[Val]; }   // global var
-      else { printf("%d: undefined variable\n", line); exit(-1); }
-      *++e = ((ty = d[Type]) == CHAR) ? LC : LI;
+    else if (tk == '"') { // String
+        *++e = IMM; *++e = ival;
+        next();
+        while (tk == '"') next();
+        data = (char *)((int)data + sizeof(int) & -sizeof(int));
     }
-  }
-  else if (tk == '(') {  // handles type casting and grouped expressions
+    else if (tk == Id) { // Variable or function
+        d = id;
+        next();
+        if (tk == '(') { // Function call
+            next();
+            t = 0; // counts number of arguments
+            while (tk != ')') { // Process arguments
+                expr(Assign);
+                *++e = PSH;
+                ++t;
+                if (tk == ',') next();
+            }
+            next();
+            if (d[Class] == Sys) *++e = d[Val]; // system call
+            else if (d[Class] == Fun) { *++e = JSR; *++e = d[Val]; } // function call
+            else { printf("%d: bad function call\n", line); exit(-1); } // bad function call
+            if (t) { *++e = ADJ; *++e = t; }  // cleanup after call
+            ty = d[Type]; // type of function
+        }
+        else if (d[Class] == Num) { *++e = IMM; *++e = d[Val]; ty = INT; }  // enum value
+        else {  // variable access
+            if (d[Class] == Loc) { *++e = LEA; *++e = loc - d[Val]; }  // local var
+            else if (d[Class] == Glo) { *++e = IMM; *++e = d[Val]; }   // global var
+            else { printf("%d: undefined variable\n", line); exit(-1); }
+            *++e = ((ty = d[Type]) == CHAR) ? LC : LI;
+        }
+    }
+    else if (tk == '(') {  // handles type casting and grouped expressions
     next();
     if (tk == Int || tk == Char) {  // type cast
       t = (tk == Int) ? INT : CHAR; next();
@@ -321,9 +393,8 @@ void expr(int lev)
   }
 }
 
-// parses and compiles statements (like if, while, return)
-// handles program flow and control structures
-// uses expr() to parse conditions and expressions within statements
+// stmt() understands statements - these are complete instructions like
+// if/while/return. It's like understanding complete sentences instead of just words
 void stmt()
 {
   int *a, *b;  // used for storing jump addresses
@@ -373,45 +444,49 @@ void stmt()
   }
 }
 
-// starts the compiler and runs the program
-// handles command line args, memory setup, parsing, and running the code
-// contains the virtual machine that executes the compiled code
-int main(int argc, char **argv)
-{
-  int fd, bt, ty, poolsz, *idmain;
-  int *pc, *sp, *bp, a, cycle; // vm registers
-  int i, *t; // temps
+// main() is where everything starts - it reads the input file and
+// coordinates all the other parts of the compiler
+int main(int argc, char **argv) {
+    int fd, bt, ty, poolsz, *idmain;
+    int *pc, *sp, *bp, a, cycle; // vm registers
+    int i, *t; // temps
 
-  // process command line arguments
-  --argc; ++argv;
-  if (argc > 0 && **argv == '-' && (*argv)[1] == 's') { src = 1; --argc; ++argv; }  // -s: show source
-  if (argc > 0 && **argv == '-' && (*argv)[1] == 'd') { debug = 1; --argc; ++argv; }  // -d: debug mode
-  if (argc < 1) { printf("usage: c4 [-s] [-d] file ...\n"); return -1; }
+    // Process command line arguments
+    --argc; ++argv;
+    if (argc > 0 && **argv == '-' && (*argv)[1] == 's') { src = 1; --argc; ++argv; }
+    if (argc > 0 && **argv == '-' && (*argv)[1] == 'd') { debug = 1; --argc; ++argv; }
+    if (argc < 1) { printf("usage: c4 [-s] [-d] file ...\n"); return -1; }
 
-  // open source file
-  if ((fd = open(*argv, 0)) < 0) { printf("could not open(%s)\n", *argv); return -1; }
+    // Initialize memory pools
+    poolsz = 256*1024; // arbitrary size
+    if (!(sym = malloc(poolsz))) { printf("could not malloc(%d) symbol area\n", poolsz); return -1; }
+    if (!(le = e = malloc(poolsz))) { printf("could not malloc(%d) text area\n", poolsz); return -1; }
+    if (!(data = malloc(poolsz))) { printf("could not malloc(%d) data area\n", poolsz); return -1; }
+    if (!(sp = malloc(poolsz))) { printf("could not malloc(%d) stack area\n", poolsz); return -1; }
 
-  // allocate memory for virtual machine
-  poolsz = 256*1024;  // arbitrary size
-  if (!(sym = malloc(poolsz))) { printf("could not malloc(%d) symbol area\n", poolsz); return -1; }
-  if (!(le = e = malloc(poolsz))) { printf("could not malloc(%d) text area\n", poolsz); return -1; }
-  if (!(data = malloc(poolsz))) { printf("could not malloc(%d) data area\n", poolsz); return -1; }
-  if (!(sp = malloc(poolsz))) { printf("could not malloc(%d) stack area\n", poolsz); return -1; }
+    // Initialize symbol table with keywords
+    memset(sym,  0, poolsz);
+    memset(e,    0, poolsz);
+    memset(data, 0, poolsz);
 
-  // initialize memory
-  memset(sym,  0, poolsz);
-  memset(e,    0, poolsz);
-  memset(data, 0, poolsz);
-
-  // add keywords to symbol table
-  p = "char else enum if int return sizeof while "
-      "open read close printf malloc free memset memcmp exit void main";
-  
-  i = Char; while (i <= While) { next(); id[Tk] = i++; } // add keywords to symbol table
-  i = OPEN; while (i <= EXIT) { next(); id[Class] = Sys; id[Type] = INT; id[Val] = i++; } // add library to symbol table
-  
-  next(); id[Tk] = Char;  // handle void type
-  next(); idmain = id;  // keep track of main
+    p = "char else enum if int return sizeof while "
+        "open read close printf malloc free memset memcmp exit void main";
+    
+    // Add keywords to symbol table
+    i = Char;
+    while (i <= While) { // Add keywords
+        next();
+        id[Tk] = i++;
+    }
+    i = OPEN;
+    while (i <= EXIT) { // Add library functions
+        next();
+        id[Class] = Sys;
+        id[Type] = INT;
+        id[Val] = i++;
+    }
+    next(); id[Tk] = Char; // handle void type
+    next(); idmain = id; // keep track of main
 
   // read program into memory
   if (!(lp = p = malloc(poolsz))) { printf("could not malloc(%d) source area\n", poolsz); return -1; }
